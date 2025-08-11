@@ -8,7 +8,6 @@ use xrpl_http::{ClientService, TransactionService};
 
 #[tokio::main]
 async fn main() {
-    // Initialize tracing
     if let Err(e) = tracing::init() {
         eprintln!("Error initializing tracing: {e}");
         std::process::exit(1);
@@ -16,10 +15,9 @@ async fn main() {
     
     dotenv::dotenv().ok();
 
-    // The secret key appears to be in base58 format (common for crypto keys)
+    // The seed key starts with "s".
     let secret_key_str = &std::env::var("SEED").expect("SEED not set on .env");
 
-    // Create services
     let transaction_service = match TransactionService::from_seed(secret_key_str) {
         Ok(service) => service,
         Err(e) => {
