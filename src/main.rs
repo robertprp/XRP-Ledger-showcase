@@ -1,40 +1,69 @@
-use std::str::FromStr;
+use ::tracing::{error, info};
+use dotenv;
 
-use bigdecimal::BigDecimal;
-
-use crate::{types::swap::{AssetType, SwapParams}, wallet::WalletService};
-pub mod wallet;
-pub mod ext;
-pub mod types;
+pub mod tracing;
 pub mod xrpl_http;
+
+use xrpl_http::{ClientService, TransactionService};
 
 #[tokio::main]
 async fn main() {
-    let seed = "spugUpafEpEthEPNLwbg52GUumFqM";
-    // Create wallet from seed
-    let wallet_service = WalletService::from_seed(seed);
+    // Initialize tracing
+    if let Err(e) = tracing::init() {
+        eprintln!("Error initializing tracing: {e}");
+        std::process::exit(1);
+    }
+    
+    dotenv::dotenv().ok();
 
-    let info = wallet_service.get_account_info("rrpuHcXfpBh68V1kGxWYX9X3Qvfkfcwcy9".to_string()).await.unwrap();
-    println!("Address: {:?}", info);
+    // The secret key appears to be in base58 format (common for crypto keys)
+    let secret_key_str = &std::env::var("SEED").expect("SEED not set on .env");
 
-    let message = "Hello, world!".to_string();
-    let signature = wallet_service.sign_message(message.clone()).unwrap();
-    println!("Signature: {}", signature);
+    // Create services
+    let transaction_service = match TransactionService::from_seed(secret_key_str) {
+        Ok(service) => service,
+        Err(e) => {
+            error!("Failed to create transaction service: {}", e);
+            std::process::exit(1);
+        }
+    };
 
-    let is_valid = wallet_service.verify_message(message, signature).unwrap();
-    println!("Is valid: {}", is_valid);
+    info!("Account address: {}", transaction_service.address());
 
-    let token_in = AssetType::XRP(BigDecimal::from_str("0.5").unwrap());
-    let token_out = AssetType::Token(crate::types::swap::TokenValue {
-        address: "rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De".to_string(),
-        amount: BigDecimal::from_str("1.8").unwrap(),
-    });
-    let result = wallet_service.swap_token(SwapParams {
-        token_in: token_in.clone(),
-        token_out: token_out.clone(),
-        token_in_min_amount: BigDecimal::from_str("0.5").unwrap(),
-        token_out_min_amount: BigDecimal::from_str("1.75").unwrap(),
-    }).await.unwrap();
+    // Token addresses
+    let ripple_usd_address = "rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De"; // USD
+    let usdc_address = "rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE";
+    let army_address = "rGG3wQ4kUzd7Jnmk1n5NWPZjjut62kCBfC";
+    let token_find_address = "r9Xzi4KsSF1Xtr8WHyBmUcvfP9FzTyG5wp";
+    let xrp_address = "XRP";
 
-    println!("Result: {:?}", result);
+    let tx_hash = "C4283F49564A12BFC52933FA4B94C4E255E2D54C354264770A6C397FAF6E45A3";
+
+    let client_service = ClientService::new();
+    let details = client_service.balance_change(tx_hash).await;
+    info!("Details: {:?}", details);
+
+    // let swap_request = SwapRequest::new(
+    //     token_find_address.to_string(),
+    //     xrp_address.to_string(),
+    //     "46.27819".to_string(),
+    //     "0.8".to_string(),
+    // );
+
+    // if let Err(e) = swap_request.validate() {
+    //     error!("Invalid swap request: {}", e);
+    //     return;
+    // }
+
+    // info!("Execung swap request: {:?}", swap_request);
+
+    // match transaction_service.swap(swap_request).await {
+    //     Ok(response) => {
+    //     }
+    //     Err(e) => {
+    //         error!("Failed to execute swap: {}", e);
+    //     }
+    // }
+
+    info!("Application completed successfully");
 }
