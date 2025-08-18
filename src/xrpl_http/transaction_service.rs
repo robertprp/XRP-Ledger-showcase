@@ -1,10 +1,10 @@
 use std::str::FromStr;
+use bigdecimal::{FromPrimitive, ToPrimitive, BigDecimal};
 use tracing::info;
 use xrpl_binary_codec::serialize;
 use xrpl_http_client::{Client, SubmitRequest, SubmitResponse};
 use xrpl_types::{
-    AccountId, CurrencyCode, DropsAmount, IssuedAmount, IssuedValue, PaymentFlags,
-    PaymentTransaction, Transaction, TrustSetTransaction,
+    AccountId, Amount, CurrencyCode, DropsAmount, IssuedAmount, IssuedValue, PaymentFlags, PaymentTransaction, Transaction, TrustSetTransaction
 };
 
 use super::{client_service::ClientService, signer::RippleSigner, types::SwapRequest};
@@ -48,7 +48,66 @@ impl TransactionService {
     pub fn client_service(&self) -> &ClientService {
         &self.client_service
     }
+    
+    pub async fn send_token_as_bytes(&self, token_address: &str, amount: &str, destination_address: &str) -> Result<Vec<u8>, String> {
+        let account_id = AccountId::from_address(self.signer.address())
+            .map_err(|e| format!("Invalid account address: {e}"))?;
+        
+        let destination = AccountId::from_address(destination_address).unwrap();
+        
+        let currencies = self.client_service
+            .get_account_currencies(token_address)
+            .await?;
 
+        if currencies.receive_currencies.is_empty() {
+            return Err(format!("No currencies found for token: {}", token_address));
+        }
+
+        let currency_code = &currencies.receive_currencies[0];
+        let currency = CurrencyCode::from_str(currency_code)
+            .map_err(|e| format!("Invalid currency code: {e}"))?;
+        
+        let value = BigDecimal::from_str(amount)
+            .map_err(|e| format!("Invalid amount format: {e}"))?;
+
+        let (value_big_int, scale) = value.into_bigint_and_scale();
+
+        let mantissa = value_big_int
+            .to_i64()
+            .ok_or("Amount too large for mantissa conversion")?;
+
+        let exponent = -(scale as i8);
+
+        info!(
+            "Parsed amount - mantissa: {}, exponent: {}",
+            mantissa, exponent
+        );
+
+        let issued_value = IssuedValue::from_mantissa_exponent(mantissa, exponent)
+            .map_err(|e| format!("Failed to create issued value: {e}"))?;
+        
+        let issuer = AccountId::from_address(token_address).unwrap();
+        let amount = Amount::Issued(
+            IssuedAmount::from_issued_value(issued_value, currency, issuer).unwrap()
+        );
+        
+        let payment = PaymentTransaction::new(account_id, amount, destination);
+        
+        self.prepare_transaction(payment).await
+    }
+
+    
+    pub async fn send_transaction_from_bytes(&self, tx_bytes: Vec<u8>) -> Result<SubmitResponse, String> {
+        let req = SubmitRequest::new(hex::encode(&tx_bytes));
+        let response = self
+            .client
+            .call(req)
+            .await
+            .map_err(|e| format!("Failed to submit transaction: {e}"))?;
+
+        Ok(response)
+    }
+    
     /// Execute a swap transaction
     pub async fn swap(&self, request: SwapRequest) -> Result<SubmitResponse, String> {
         let account_id = AccountId::from_address(self.signer.address())
@@ -76,8 +135,6 @@ impl TransactionService {
         token_address: &str,
         limit: Option<&str>,
     ) -> Result<SubmitResponse, String> {
-        info!("Creating trust line for token: {}", token_address);
-
         let currencies = self
             .client_service
             .get_account_currencies(token_address)
@@ -88,7 +145,11 @@ impl TransactionService {
         }
 
         let currency_code = &currencies.receive_currencies[0];
-        let account_id = AccountId::from_address(self.signer.address())
+        
+        info!("Signer address: {}", self.signer.address);
+        info!("Signer address v2: {}", self.signer.address());
+        
+        let account_id = AccountId::from_address(&self.signer.address.clone())
             .map_err(|e| format!("Invalid account address: {e}"))?;
 
         let limit_value = limit.unwrap_or("10000000");
@@ -104,35 +165,72 @@ impl TransactionService {
         let issued_amount = IssuedAmount::from_issued_value(issued_value, currency, issuer)
             .map_err(|e| format!("Failed to create issued amount: {e}"))?;
 
-        let tx = TrustSetTransaction::new(account_id, issued_amount);
+        let mut tx = TrustSetTransaction::new(account_id, issued_amount);
 
-        self.prepare_and_submit_transaction(tx).await
+        let address = self.signer.address.clone();
+        let resp = self.client_service.get_account_info(&address).await?;
+        
+        let common_mut = tx.common_mut();
+        common_mut.sequence = Some(resp.account_data.sequence);
+        
+        self.client
+            .prepare_transaction(common_mut)
+            .await
+            .map_err(|e| format!("Failed to prepare transaction: {e}"))
+            .unwrap();
+        
+        self.signer.sign_transaction(&mut tx)?;
+        
+        let tx_bytes = serialize::serialize(&tx)
+            .map_err(|e| format!("Failed to serialize transaction: {e}"))?;
+        
+        let req = SubmitRequest::new(hex::encode(&tx_bytes));
+        let response = self
+            .client
+            .call(req)
+            .await
+            .map_err(|e| format!("Failed to submit transaction: {e}"))?;
+
+        Ok(response)
+    }
+    
+    
+    pub async fn prepare_transaction<T>(&self, mut transaction: T) -> Result<Vec<u8>, String> 
+    where
+        T: Transaction + Clone + std::fmt::Debug,
+    {
+        let address = self.signer.address.clone();
+        let resp = self.client_service.get_account_info(&address).await?;
+        
+        let common_mut = transaction.common_mut();
+        common_mut.sequence = Some(resp.account_data.sequence);
+        
+        self.client
+            .prepare_transaction(common_mut)
+            .await
+            .map_err(|e| format!("Failed to prepare transaction: {e}"))
+            .unwrap();
+        
+        info!("Transaction before signing: {:?}", transaction);
+        
+        self.signer.sign_transaction(&mut transaction)?;
+        
+        info!("Transaction after signing: {:?}", transaction);
+        let tx_bytes = serialize::serialize(&transaction)
+            .map_err(|e| format!("Failed to serialize transaction: {e}"))?;
+        
+        Ok(tx_bytes)
     }
 
     /// Prepare, sign, and submit a transaction
     async fn prepare_and_submit_transaction<T>(
         &self,
-        mut transaction: T,
+        transaction: T,
     ) -> Result<SubmitResponse, String>
     where
-        T: Transaction + Clone,
+        T: Transaction + Clone + std::fmt::Debug,
     {
-        let address = self.signer.address.clone();
-        let resp = self.client_service.get_account_info(&address).await?;
-
-        let common_mut = transaction.common_mut();
-
-        common_mut.sequence = Some(resp.account_data.sequence);
-
-        self.client
-            .prepare_transaction(common_mut)
-            .await
-            .map_err(|e| format!("Failed to prepare transaction: {e}"))?;
-
-        self.signer.sign_transaction(&mut transaction)?;
-
-        let tx_blob = serialize::serialize(&transaction)
-            .map_err(|e| format!("Failed to serialize transaction: {e}"))?;
+        let tx_blob = self.prepare_transaction(transaction.clone()).await?;
 
         let req = SubmitRequest::new(hex::encode(&tx_blob));
         let response = self

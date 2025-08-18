@@ -1,5 +1,6 @@
 use libsecp256k1::{PublicKey, SecretKey};
 use ripple_keypairs::Seed;
+use tracing::info;
 use std::str::FromStr;
 use xrpl_binary_codec::sign;
 use xrpl_types::Transaction;
@@ -15,28 +16,32 @@ impl RippleSigner {
     /// Create a new signer from a seed string
     pub fn from_seed(seed_str: &str) -> Result<Self, String> {
         let seed = Seed::from_str(seed_str).map_err(|e| format!("Invalid seed format: {e}"))?;
-
+        
         let (private_key, public_key) = seed
             .derive_keypair()
             .map_err(|e| format!("Failed to derive keypair: {e}"))?;
-
+        
         let address = public_key.derive_address();
         let secret_key_hex = private_key.to_string();
-
-        let hex_secret = if secret_key_hex.starts_with("00") {
-            &secret_key_hex[2..]
-        } else {
-            &secret_key_hex
-        };
-
-        let secret_bytes = hex::decode(hex_secret)
+        
+        let secret_bytes = hex::decode(secret_key_hex)
             .map_err(|e| format!("Failed to decode secret key hex: {e}"))?;
-
-        let secret_key = SecretKey::parse_slice(&secret_bytes)
+        
+        // For secp256k1, we need exactly 32 bytes
+        // If we have 33 bytes, take the first 32 (skip the prefix byte)
+        let key_bytes = if secret_bytes.len() == 33 {
+            &secret_bytes[1..] // Skip the first byte (ED prefix)
+        } else if secret_bytes.len() == 32 {
+            &secret_bytes
+        } else {
+            return Err(format!("Invalid secret key length: expected 32 or 33 bytes, got {}", secret_bytes.len()));
+        };
+        
+        let secret_key = SecretKey::parse_slice(key_bytes)
             .map_err(|e| format!("Failed to parse secret key: {e}"))?;
-
+        
         let public_key = PublicKey::from_secret_key(&secret_key);
-
+        
         Ok(Self {
             address,
             secret_key,

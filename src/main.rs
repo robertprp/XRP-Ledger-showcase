@@ -16,30 +16,45 @@ async fn main() {
     dotenv::dotenv().ok();
 
     // The seed key starts with "s".
-    let secret_key_str = &std::env::var("SEED").expect("SEED not set on .env");
+    let seed_middle_man = &std::env::var("SEED_MIDDLE_MAN").expect("SEED not set on .env");
+    let seed_solver = &std::env::var("SEED_SOLVER").expect("SEED not set on .env");
+    
+    info!("Middle man seed: {}", seed_middle_man);
+    info!("Solver seed: {}", seed_solver);
 
-    let transaction_service = match TransactionService::from_seed(secret_key_str) {
-        Ok(service) => service,
-        Err(e) => {
-            error!("Failed to create transaction service: {}", e);
-            std::process::exit(1);
-        }
-    };
-
-    info!("Account address: {}", transaction_service.address());
-
-    // Token addresses
-    let ripple_usd_address = "rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De"; // USD
+    let solver_service = TransactionService::from_seed(seed_solver).unwrap();
+    
+    let solver_address = solver_service.address();
+    info!("Solver address: {}", solver_address);
+    
+    let mm_service = TransactionService::from_seed(seed_middle_man).unwrap();
+    info!("Middle man address: {}", mm_service.address());
+    
     let usdc_address = "rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE";
-    let army_address = "rGG3wQ4kUzd7Jnmk1n5NWPZjjut62kCBfC";
-    let token_find_address = "r9Xzi4KsSF1Xtr8WHyBmUcvfP9FzTyG5wp";
-    let xrp_address = "XRP";
+    let ripple_usd_address = "rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De"; // USD
 
-    let tx_hash = "C4283F49564A12BFC52933FA4B94C4E255E2D54C354264770A6C397FAF6E45A3";
+    let solver_trustline = solver_service.create_trust_line(ripple_usd_address, None).await.unwrap();
+    info!("Solver trustline: {:?}", solver_trustline);
+    // let amount = "0.1";
+    // 
+    // let payment_bytes = mm_service.send_token_as_bytes(usdc_address, amount, solver_address).await.unwrap();
+    // 
+    // let submit_by_solver = solver_service.send_transaction_from_bytes(payment_bytes).await.unwrap();
+    // 
+    // info!("Submit by solver: {:?}", submit_by_solver);
+    
+    // Token addresses
+    // let ripple_usd_address = "rMxCKbEDwqr76QuheSUMdEGf4B9xJ8m5De"; // USD
+    // let usdc_address = "rGm7WCVp9gb4jZHWTEtGUr4dd74z2XuWhE";
+    // let army_address = "rGG3wQ4kUzd7Jnmk1n5NWPZjjut62kCBfC";
+    // let token_find_address = "r9Xzi4KsSF1Xtr8WHyBmUcvfP9FzTyG5wp";
+    // let xrp_address = "XRP";
 
-    let client_service = ClientService::new();
-    let details = client_service.balance_change(tx_hash).await;
-    info!("Details: {:?}", details);
+    // let tx_hash = "C4283F49564A12BFC52933FA4B94C4E255E2D54C354264770A6C397FAF6E45A3";
+
+    // let client_service = ClientService::new();
+    // let details = client_service.balance_change(tx_hash).await;
+    // info!("Details: {:?}", details);
 
     // let swap_request = SwapRequest::new(
     //     token_find_address.to_string(),
